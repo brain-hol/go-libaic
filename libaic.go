@@ -14,6 +14,7 @@ type libAIC struct {
 
 type Opts struct {
 	BaseURL string
+	Auth    authStrategy
 }
 
 func New(opts Opts) (*libAIC, error) {
@@ -27,9 +28,17 @@ func New(opts Opts) (*libAIC, error) {
 		middleware.BaseURL(opts.BaseURL),
 		middleware.DebugLog,
 	)
+	client := &http.Client{
+		Transport: transport,
+	}
+	if opts.Auth != nil {
+		mw, err := opts.Auth.generateMiddleware(client)
+		if err != nil {
+			return nil, err
+		}
+		transport.Use(mw)
+	}
 	return &libAIC{
-		client: &http.Client{
-			Transport: transport,
-		},
+		client,
 	}, nil
 }
