@@ -10,6 +10,7 @@ import (
 type contextKey string
 
 const apiVersionKey contextKey = "apiVersion"
+const needsAuthKey contextKey = "needsAuth"
 
 // WithAPIVersion returns a copy of the request with the API version set in the context.
 func withAPIVersion(req *http.Request, version string) *http.Request {
@@ -25,3 +26,14 @@ var acceptApiVersionMiddleware = httpkit.NewMiddleware(func(req *http.Request, n
 	}
 	return next.RoundTrip(req)
 })
+
+func withNeedsAuth(req *http.Request) *http.Request {
+	ctx := context.WithValue(req.Context(), needsAuthKey, true)
+	return req.WithContext(ctx)
+}
+
+func needsAuth(req *http.Request) bool {
+	v := req.Context().Value(needsAuthKey)
+	b, ok := v.(bool)
+	return ok && b
+}

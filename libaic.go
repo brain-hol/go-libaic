@@ -1,8 +1,8 @@
 package libaic
 
 import (
-	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/brain-hol/go-httpkit"
 	"github.com/brain-hol/go-httpkit/middleware"
@@ -13,15 +13,11 @@ type libAIC struct {
 }
 
 type Opts struct {
-	BaseURL string
+	BaseURL *url.URL
 	Auth    authStrategy
 }
 
 func New(opts Opts) (*libAIC, error) {
-	if opts.BaseURL == "" {
-		return nil, fmt.Errorf("BaseURL cannot be blank")
-	}
-
 	transport := &httpkit.Transport{}
 	transport.Use(
 		acceptApiVersionMiddleware,
@@ -32,7 +28,7 @@ func New(opts Opts) (*libAIC, error) {
 		Transport: transport,
 	}
 	if opts.Auth != nil {
-		mw, err := opts.Auth.generateMiddleware(client)
+		mw, err := opts.Auth.generateMiddleware(opts)
 		if err != nil {
 			return nil, err
 		}
