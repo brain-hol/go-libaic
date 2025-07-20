@@ -229,3 +229,185 @@ func (strat *ServiceAccountAuth) createPayload(baseURL *url.URL) (string, error)
 
 	return string(signed), nil
 }
+
+type AmsterAuth struct {
+	Subject    string
+	KeyBytes   []byte
+	CookieName string
+}
+
+var _ authStrategy = &AmsterAuth{}
+
+func (strat *AmsterAuth) generateMiddleware(opts Opts) (httpkit.Middleware, error) {
+	var cookie string
+	var once sync.Once
+	var fetchErr error
+
+	transport := &httpkit.Transport{}
+	transport.Use(
+		middleware.BaseURL(opts.BaseURL),
+		middleware.DebugLog,
+	)
+	client := &http.Client{
+		Transport: transport,
+	}
+
+	mw := httpkit.NewMiddleware(func(req *http.Request, next http.RoundTripper) (*http.Response, error) {
+		if !needsAuth(req) {
+			return next.RoundTrip(req)
+		}
+		once.Do(func() {
+			cookie, fetchErr = strat.fetchAmsterToken(client)
+		})
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		req.AddCookie(&http.Cookie{
+			Name:  strat.CookieName,
+			Value: cookie,
+		})
+		return next.RoundTrip(req)
+	})
+
+	return mw, nil
+}
+
+func (strat *AmsterAuth) fetchAmsterToken(client *http.Client) (string, error) {
+	authURL := "json/authenticate?authIndexType=service&authIndexValue=amsterService"
+
+	// Initial request to get nonce
+	req, err := http.NewRequest("POST", authURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	// TODO find a way to make this integrated with authenticate api
+	var authResp struct {
+		AuthID    string `json:"authId"`
+		Callbacks []struct {
+			Type   string `json:"type"`
+			Output []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"output"`
+		} `json:"callbacks"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&authResp); err != nil {
+		return "", fmt.Errorf("error decoding nonce response: %w", err)
+	}
+
+	var nonce string
+	for _, cb := range authResp.Callbacks {
+		if cb.Type == "HiddenValueCallback" {
+			for _, out := range cb.Output {
+				if out.Name == "value" {
+					nonce = out.Value
+				}
+			}
+		}
+	}
+
+	if nonce == "" {
+		return "", fmt.Errorf("nonce not found in auth response")
+	}
+
+	jwtStr, err := strat.generateJWT(nonce)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign JWT: %w", err)
+	}
+
+	// TOOD once we have nice helpers around these, lets just modify the original instead
+	payload := map[string]any{
+		"authId": authResp.AuthID,
+		"callbacks": []map[string]any{
+			{
+				"type": "HiddenValueCallback",
+				"input": []map[string]any{
+					{"name": "IDToken1", "value": jwtStr},
+				},
+				"output": []map[string]any{
+					{"name": "value", "value": nonce},
+					{"name": "id", "value": "jwt"},
+				},
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal auth response: %w", err)
+	}
+
+	req, err = http.NewRequest("POST", authURL, strings.NewReader(string(body)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	for _, c := range resp.Cookies() {
+		if c.Name == strat.CookieName {
+			return c.Value, nil
+		}
+	}
+
+	return "", fmt.Errorf("authentication failed, no token returned")
+}
+
+func (strat *AmsterAuth) generateJWT(nonce string) (string, error) {
+	tok, err := jwt.NewBuilder().
+		Subject(strat.Subject).
+		Claim("nonce", nonce).
+		Build()
+	if err != nil {
+		return "", fmt.Errorf("failed to build JWT: %w", err)
+	}
+
+	private, err := parseKeyToJWK(strat.KeyBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse JWK: %w", err)
+	}
+
+	kid, err := extractBase64SshPublicKey(strat.KeyBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract base64 ssh public key from private key: %w", err)
+	}
+
+	err = private.Set(jwk.KeyIDKey, kid)
+	if err != nil {
+		return "", fmt.Errorf("failed to set kid of private key: %w", err)
+	}
+
+	var alg jwa.SignatureAlgorithm
+
+	switch private.KeyType() {
+	case jwa.RSA():
+		alg = jwa.RS256()
+	case jwa.EC():
+		alg = jwa.ES256()
+	// OKP for Ed25519
+	case jwa.OKP():
+		alg = jwa.EdDSA()
+	default:
+		return "", fmt.Errorf("unsupported key type: %s", private.KeyType())
+	}
+
+	signed, err := jwt.Sign(tok, jwt.WithKey(alg, private))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %w", err)
+	}
+
+	return string(signed), nil
+}
