@@ -130,50 +130,7 @@ func (strat *ServiceAccountAuth) generateMiddleware(opts Opts) (httpkit.Middlewa
 			return next.RoundTrip(req)
 		}
 		once.Do(func() {
-			var jwtStr string
-			jwtStr, fetchErr = strat.createPayload(opts.BaseURL)
-			if fetchErr != nil {
-				return
-			}
-
-			scope := "fr:am:* fr:idm:*"
-			form := url.Values{}
-			form.Set("assertion", jwtStr)
-			form.Set("client_id", "service-account")
-			form.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
-			form.Set("scope", scope)
-
-			body := strings.NewReader(form.Encode())
-			req, err := http.NewRequest("POST", "oauth2/access_token", body)
-			if err != nil {
-				fetchErr = err
-				return
-			}
-
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			req = withAPIVersion(req, "protocol=2.1,resource=1.0")
-
-			resp, err := tokenClient.Do(req)
-			if err != nil {
-				fetchErr = err
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				fetchErr = fmt.Errorf("failed to get access token: %s", resp.Status)
-				return
-			}
-
-			var result struct {
-				AccessToken string `json:"access_token"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-				fetchErr = fmt.Errorf("failed to decode token response: %w", err)
-				return
-			}
-
-			token = result.AccessToken
+			token, fetchErr = strat.fetchAccessToken(tokenClient, opts.BaseURL)
 		})
 		if fetchErr != nil {
 			return nil, fetchErr
@@ -183,6 +140,49 @@ func (strat *ServiceAccountAuth) generateMiddleware(opts Opts) (httpkit.Middlewa
 	})
 
 	return mw, nil
+}
+
+func (strat *ServiceAccountAuth) fetchAccessToken(client *http.Client, baseURL *url.URL) (string, error) {
+	jwtStr, err := strat.createPayload(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to create JWT payload: %w", err)
+	}
+
+	form := url.Values{
+		"assertion":  {jwtStr},
+		"client_id":  {"service-account"},
+		"grant_type": {"urn:ietf:params:oauth:grant-type:jwt-bearer"},
+		"scope":      {"fr:am:* fr:idm:*"},
+	}
+	req, err := http.NewRequest("POST", "oauth2/access_token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("failed to create token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = withAPIVersion(req, "protocol=2.1,resource=1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status code %d when fetching token", resp.StatusCode)
+	}
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("token response contained no access_token")
+	}
+
+	return result.AccessToken, nil
 }
 
 type Payload struct {

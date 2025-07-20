@@ -51,7 +51,7 @@ type ScriptSkeleton struct {
 	Name             string         `json:"name"`
 	Description      string         `json:"description"`
 	Default          bool           `json:"default"`
-	Script           any            `json:"script"` // string or []string
+	Script           string         `json:"script"`
 	Language         ScriptLanguage `json:"language"`
 	Context          ScriptContext  `json:"context"`
 	CreatedBy        string         `json:"createdBy"`
@@ -62,7 +62,7 @@ type ScriptSkeleton struct {
 }
 
 func (aic *libAIC) GetScripts() error {
-	req, _ := http.NewRequest("GET", "json/alpha/scripts?queryFilter=true", nil)
+	req, _ := http.NewRequest("GET", "json/alpha/scripts?_queryFilter=true", nil)
 	req = withAPIVersion(req, "protocol=2.0,resource=1.0")
 	req = withNeedsAuth(req)
 	_, err := aic.client.Do(req)
