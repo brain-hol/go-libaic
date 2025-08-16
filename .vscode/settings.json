@@ -1,0 +1,10 @@
+{
+    "go.alternateTools": {
+        "go": "${workspaceFolder}/go/bin/go",
+    },
+    "gopls": {
+        "build.directoryFilters": [
+            "-go"
+        ]
+    }
+}
